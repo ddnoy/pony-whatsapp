@@ -9,50 +9,45 @@ from google import genai
 from google.genai import types
 from config import settings
 from database import get_history, save_message
-from calendar_tools import list_upcoming_events, create_event, get_free_slots
+from calendar_tools import list_upcoming_events, get_free_slots, create_event
 
 # Initialize Gemini client
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-CALENDAR_SYSTEM_ADDON = """
+# Keywords that trigger calendar lookup
+CALENDAR_KEYWORDS = [
+    "יומן", "פגישה", "פגישות", "אירוע", "אירועים", "מחר", "השבוע",
+    "היום", "מתי", "פנוי", "זמן", "קבע", "לקבוע", "תזכיר", "תזכורת",
+    "calendar", "meeting", "schedule", "appointment", "free", "busy"
+]
 
-יש לך גישה ליומן Google Calendar של דויד. כשדויד שואל על פגישות, זמן פנוי, או רוצה לקבוע אירוע — השתמש בפונקציות הבאות:
-- list_events: מציג אירועים קרובים
-- get_free: בודק זמן פנוי בתאריך מסוים (פורמט: YYYY-MM-DD)
-- create_event: יוצר אירוע חדש (כותרת, תאריך התחלה, תאריך סיום בפורמט ISO)
-
-כשאתה צריך מידע מהיומן, כתוב שורה בפורמט הבא (בשורה נפרדת):
-[CALENDAR:list_events]
-[CALENDAR:get_free:2026-04-15]
-[CALENDAR:create_event:כותרת|2026-04-15T10:00:00+03:00|2026-04-15T11:00:00+03:00]
-"""
+CREATE_KEYWORDS = ["קבע", "צור", "הוסף", "תוסיף", "תקבע", "תיצור", "לקבוע", "create", "add", "schedule"]
 
 
-def _handle_calendar_commands(text: str) -> tuple[str, str]:
-    """Extract and execute calendar commands from response."""
-    lines = text.split("\n")
-    results = []
-    clean_lines = []
+def _is_calendar_query(message: str) -> bool:
+    msg_lower = message.lower()
+    return any(kw in msg_lower for kw in CALENDAR_KEYWORDS)
 
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("[CALENDAR:"):
-            cmd = stripped[10:-1]  # remove [CALENDAR: and ]
-            if cmd == "list_events":
-                results.append(list_upcoming_events())
-            elif cmd.startswith("get_free:"):
-                date = cmd.split(":", 1)[1]
-                results.append(get_free_slots(date))
-            elif cmd.startswith("create_event:"):
-                parts = cmd.split(":", 1)[1].split("|")
-                if len(parts) >= 3:
-                    results.append(create_event(parts[0], parts[1], parts[2]))
+
+def _is_create_query(message: str) -> bool:
+    msg_lower = message.lower()
+    return any(kw in msg_lower for kw in CREATE_KEYWORDS)
+
+
+def _get_calendar_context(message: str) -> str:
+    """Fetch relevant calendar data based on message content."""
+    try:
+        # Check for specific date mentions
+        import re
+        date_match = re.search(r"(\d{4}-\d{2}-\d{2})", message)
+
+        if date_match:
+            date = date_match.group(1)
+            return f"[נתוני יומן לתאריך {date}:]\n{get_free_slots(date)}"
         else:
-            clean_lines.append(line)
-
-    clean_text = "\n".join(clean_lines).strip()
-    calendar_data = "\n".join(results)
-    return clean_text, calendar_data
+            return f"[אירועים קרובים ביומן:]\n{list_upcoming_events(10)}"
+    except Exception as e:
+        return f"[שגיאה בגישה ליומן: {e}]"
 
 
 def get_response(phone: str, message: str, sender_name: str = "") -> str:
@@ -61,6 +56,20 @@ def get_response(phone: str, message: str, sender_name: str = "") -> str:
     # Load conversation history
     history = get_history(phone, limit=settings.MAX_HISTORY)
 
+    # Build system prompt with calendar data if needed
+    system_prompt = settings.SYSTEM_PROMPT
+
+    if _is_calendar_query(message):
+        calendar_context = _get_calendar_context(message)
+        system_prompt += f"""
+
+יש לך גישה ליומן Google Calendar של דויד. הנה המידע העדכני:
+
+{calendar_context}
+
+השתמש במידע זה כדי לענות על שאלות דויד לגבי היומן שלו. אם דויד מבקש לקבוע פגישה, ציין את הפרטים בצורה ברורה.
+"""
+
     # Build contents list
     contents = []
     for msg in history:
@@ -68,9 +77,7 @@ def get_response(phone: str, message: str, sender_name: str = "") -> str:
         contents.append(types.Content(role=role, parts=[types.Part(text=msg["content"])]))
     contents.append(types.Content(role="user", parts=[types.Part(text=message)]))
 
-    system_prompt = settings.SYSTEM_PROMPT + CALENDAR_SYSTEM_ADDON
-
-    # First LLM call
+    # Call Gemini
     response = client.models.generate_content(
         model=settings.LLM_MODEL,
         contents=contents,
@@ -79,24 +86,6 @@ def get_response(phone: str, message: str, sender_name: str = "") -> str:
         )
     )
     reply = response.text
-
-    # Handle calendar commands
-    clean_reply, calendar_data = _handle_calendar_commands(reply)
-
-    # If calendar data was fetched, do a second call with the data
-    if calendar_data:
-        contents.append(types.Content(role="model", parts=[types.Part(text=clean_reply)]))
-        contents.append(types.Content(role="user", parts=[types.Part(
-            text=f"[נתוני יומן:]\n{calendar_data}\n\nעכשיו ענה לדויד על סמך המידע הזה.")]))
-
-        response2 = client.models.generate_content(
-            model=settings.LLM_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-            )
-        )
-        reply = response2.text
 
     # Save conversation
     save_message(phone, "user", message)
