@@ -18,13 +18,16 @@ SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 def _get_service():
     """Build Google Calendar service from credentials."""
+    import base64
     creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
     if not creds_json:
         raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON not set")
-    creds_info = json.loads(creds_json)
-    # Fix private key newlines if escaped (common in env vars)
-    if "private_key" in creds_info:
-        creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+    # Support base64-encoded JSON
+    try:
+        decoded = base64.b64decode(creds_json).decode()
+        creds_info = json.loads(decoded)
+    except Exception:
+        creds_info = json.loads(creds_json)
     creds = service_account.Credentials.from_service_account_info(
         creds_info, scopes=SCOPES
     )
