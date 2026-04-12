@@ -19,6 +19,9 @@ def _get_service():
     if not creds_json:
         raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON not set")
     creds_info = json.loads(creds_json)
+    # Fix private key newlines if escaped (common in env vars)
+    if "private_key" in creds_info:
+        creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
     creds = service_account.Credentials.from_service_account_info(
         creds_info, scopes=SCOPES
     )
