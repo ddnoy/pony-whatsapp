@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: pony-whatsapp
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GREEN_API_URL
+        value: https://api.green-api.com
+      - key: GREEN_API_INSTANCE
+        value: "7107576438"
+      - key: GREEN_API_TOKEN
+        value: d0e4b38ea73f495b93e40232ea3dcdfc41e00d5469b34dec9e
+      - key: GEMINI_API_KEY
+        value: AIzaSyB2VeHz4OYuwJqR0sGINwh1H1AF24TCvAM
+      - key: LLM_MODEL
+        value: gemini-2.0-flash
+      - key: MAX_HISTORY
+        value: "20"
+      - key: DATABASE_PATH
+        value: /data/conversations.db
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
