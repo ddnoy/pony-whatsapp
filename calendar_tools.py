@@ -6,9 +6,12 @@ Provides tools to read and create calendar events.
 
 import os
 import json
+import logging
 from datetime import datetime, timezone
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+
+logger = logging.getLogger("פוני-calendar")
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
@@ -54,6 +57,7 @@ def list_upcoming_events(max_results: int = 10) -> str:
             result.append(f"- {summary}: {start}")
         return "\n".join(result)
     except Exception as ex:
+        logger.error(f"Calendar list_events error: {ex}")
         return f"שגיאה בגישה ליומן: {ex}"
 
 
@@ -74,6 +78,7 @@ def create_event(summary: str, start: str, end: str, description: str = "") -> s
         ).execute()
         return f"האירוע '{summary}' נוצר בהצלחה ביומן."
     except Exception as ex:
+        logger.error(f"Calendar create_event error: {ex}")
         return f"שגיאה ביצירת אירוע: {ex}"
 
 
@@ -103,4 +108,5 @@ def get_free_slots(date: str, duration_minutes: int = 60) -> str:
         busy_str = "\n".join(busy)
         return f"ביום {date} יש לך:\n{busy_str}"
     except Exception as ex:
+        logger.error(f"Calendar get_free_slots error: {ex}")
         return f"שגיאה בבדיקת היומן: {ex}"
