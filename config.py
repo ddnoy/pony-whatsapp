@@ -10,10 +10,8 @@ load_dotenv()
 
 
 class Settings:
-    # Green API
-    GREEN_API_URL: str = os.getenv("GREEN_API_URL", "https://api.green-api.com")
-    GREEN_API_INSTANCE: str = os.getenv("GREEN_API_INSTANCE", "")
-    GREEN_API_TOKEN: str = os.getenv("GREEN_API_TOKEN", "")
+    # Telegram
+    TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN", "")
 
     # LLM
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gemini-2.0-flash")

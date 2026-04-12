@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-פוני - WhatsApp AI Agent
-Webhook server that receives messages from Green API and responds using AI.
+פוני - Telegram AI Agent
+Webhook server that receives messages from Telegram and responds using AI.
 """
 
-import hashlib
 import time
 import logging
 from contextlib import asynccontextmanager
@@ -17,13 +16,11 @@ from config import settings
 from agent import get_response
 from database import init_db
 
-# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("פוני")
 
-# Simple deduplication: track recent message IDs
 _seen_messages: dict[str, float] = {}
-DEDUP_WINDOW = 60  # seconds
+DEDUP_WINDOW = 60
 
 
 def _cleanup_seen():
@@ -48,70 +45,60 @@ async def health():
     return {"status": "ok", "agent": "פוני"}
 
 
-@app.post("/webhook/green-api")
-async def webhook(request: Request):
-    """Handle incoming messages from Green API."""
+@app.post("/webhook/telegram")
+async def telegram_webhook(request: Request):
+    """Handle incoming messages from Telegram."""
     try:
         data = await request.json()
     except Exception:
         return JSONResponse({"error": "invalid json"}, status_code=400)
 
-    webhook_type = data.get("typeWebhook")
-    if webhook_type != "incomingMessageReceived":
-        return {"ok": True, "skipped": webhook_type}
+    message = data.get("message") or data.get("edited_message")
+    if not message:
+        return {"ok": True}
 
-    message_data = data.get("messageData", {})
-    message_type = message_data.get("typeMessage")
-    if message_type != "textMessage":
-        return {"ok": True, "skipped": message_type}
-
-    sender_data = data.get("senderData", {})
-    chat_id = sender_data.get("chatId", "")
-    sender_name = sender_data.get("senderName", "")
-    text = message_data.get("textMessageData", {}).get("textMessage", "")
-    message_id = data.get("idMessage", "")
-
-    # Skip group messages
-    if "@g.us" in chat_id:
-        return {"ok": True, "skipped": "group_message"}
+    text = message.get("text", "")
+    chat_id = message["chat"]["id"]
+    sender_name = message.get("from", {}).get("first_name", "")
+    message_id = str(message.get("message_id", ""))
 
     if not text.strip():
-        return {"ok": True, "skipped": "empty"}
+        return {"ok": True}
+
+    # Skip group messages
+    if message["chat"]["type"] != "private":
+        return {"ok": True}
 
     # Deduplication
     _cleanup_seen()
     if message_id in _seen_messages:
-        return {"ok": True, "skipped": "duplicate"}
+        return {"ok": True}
     _seen_messages[message_id] = time.time()
 
-    phone = chat_id.replace("@c.us", "")
-    logger.info(f"Message from {sender_name} ({phone}): {text[:50]}...")
+    logger.info(f"Message from {sender_name} ({chat_id}): {text[:50]}...")
 
     try:
-        reply = get_response(phone, text, sender_name)
+        reply = get_response(str(chat_id), text, sender_name)
     except Exception as e:
         logger.error(f"Agent error: {e}")
         reply = "סליחה, משהו השתבש. נסה שוב בעוד רגע."
 
     try:
-        await send_whatsapp_message(chat_id, reply)
-        logger.info(f"Reply sent to {phone}: {reply[:50]}...")
+        await send_telegram_message(chat_id, reply)
+        logger.info(f"Reply sent to {chat_id}: {reply[:50]}...")
     except Exception as e:
         logger.error(f"Failed to send reply: {e}")
 
     return {"ok": True}
 
 
-async def send_whatsapp_message(chat_id: str, message: str):
-    url = (
-        f"{settings.GREEN_API_URL}"
-        f"/waInstance{settings.GREEN_API_INSTANCE}"
-        f"/sendMessage/{settings.GREEN_API_TOKEN}"
-    )
+async def send_telegram_message(chat_id: int, text: str):
+    """Send a message via Telegram Bot API."""
+    url = f"https://api.telegram.org/bot{settings.TELEGRAM_TOKEN}/sendMessage"
     async with httpx.AsyncClient() as client:
         response = await client.post(
             url,
-            json={"chatId": chat_id, "message": message},
+            json={"chat_id": chat_id, "text": text},
             timeout=30,
         )
         response.raise_for_status()
