@@ -1,94 +1,181 @@
 # -*- coding: utf-8 -*-
 """
-פוני - AI conversation logic.
-Handles message processing, conversation history, and LLM calls.
+פוני - AI conversation logic with Gemini function calling.
 """
 
 import os
+import json
+import logging
 from google import genai
 from google.genai import types
 from config import settings
 from database import get_history, save_message
 from calendar_tools import list_upcoming_events, get_free_slots, create_event
+from email_tools import send_email
 
-# Initialize Gemini client
+logger = logging.getLogger("פוני")
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-# Keywords that trigger calendar lookup
-CALENDAR_KEYWORDS = [
-    "יומן", "פגישה", "פגישות", "אירוע", "אירועים", "מחר", "השבוע",
-    "היום", "מתי", "פנוי", "זמן", "קבע", "לקבוע", "תזכיר", "תזכורת",
-    "calendar", "meeting", "schedule", "appointment", "free", "busy"
+# Function declarations for Gemini function calling
+TOOLS = [
+    types.Tool(function_declarations=[
+        types.FunctionDeclaration(
+            name="list_calendar_events",
+            description="מציג אירועים קרובים ביומן של דויד",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "max_results": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="כמה אירועים להציג, ברירת מחדל 10"
+                    )
+                }
+            )
+        ),
+        types.FunctionDeclaration(
+            name="get_free_slots",
+            description="בודק מה יש ביומן של דויד בתאריך מסוים ומה הזמן הפנוי",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "date": types.Schema(
+                        type=types.Type.STRING,
+                        description="תאריך בפורמט YYYY-MM-DD למשל 2026-04-15"
+                    )
+                },
+                required=["date"]
+            )
+        ),
+        types.FunctionDeclaration(
+            name="create_calendar_event",
+            description="יוצר אירוע חדש ביומן של דויד",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "summary": types.Schema(
+                        type=types.Type.STRING,
+                        description="כותרת האירוע"
+                    ),
+                    "start": types.Schema(
+                        type=types.Type.STRING,
+                        description="זמן התחלה בפורמט ISO 8601 למשל 2026-04-15T10:00:00+03:00"
+                    ),
+                    "end": types.Schema(
+                        type=types.Type.STRING,
+                        description="זמן סיום בפורמט ISO 8601 למשל 2026-04-15T11:00:00+03:00"
+                    ),
+                    "description": types.Schema(
+                        type=types.Type.STRING,
+                        description="תיאור האירוע (אופציונלי)"
+                    )
+                },
+                required=["summary", "start", "end"]
+            )
+        ),
+        types.FunctionDeclaration(
+            name="send_email",
+            description="שולח מייל בשם דויד",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "to": types.Schema(
+                        type=types.Type.STRING,
+                        description="כתובת המייל של הנמען"
+                    ),
+                    "subject": types.Schema(
+                        type=types.Type.STRING,
+                        description="נושא המייל"
+                    ),
+                    "body": types.Schema(
+                        type=types.Type.STRING,
+                        description="תוכן המייל"
+                    )
+                },
+                required=["to", "subject", "body"]
+            )
+        ),
+    ])
 ]
 
-CREATE_KEYWORDS = ["קבע", "צור", "הוסף", "תוסיף", "תקבע", "תיצור", "לקבוע", "create", "add", "schedule"]
 
-
-def _is_calendar_query(message: str) -> bool:
-    msg_lower = message.lower()
-    return any(kw in msg_lower for kw in CALENDAR_KEYWORDS)
-
-
-def _is_create_query(message: str) -> bool:
-    msg_lower = message.lower()
-    return any(kw in msg_lower for kw in CREATE_KEYWORDS)
-
-
-def _get_calendar_context(message: str) -> str:
-    """Fetch relevant calendar data based on message content."""
+def _execute_function(name: str, args: dict) -> str:
+    """Execute a function call from Gemini."""
     try:
-        # Check for specific date mentions
-        import re
-        date_match = re.search(r"(\d{4}-\d{2}-\d{2})", message)
-
-        if date_match:
-            date = date_match.group(1)
-            return f"[נתוני יומן לתאריך {date}:]\n{get_free_slots(date)}"
+        if name == "list_calendar_events":
+            return list_upcoming_events(args.get("max_results", 10))
+        elif name == "get_free_slots":
+            return get_free_slots(args["date"])
+        elif name == "create_calendar_event":
+            return create_event(
+                args["summary"],
+                args["start"],
+                args["end"],
+                args.get("description", "")
+            )
+        elif name == "send_email":
+            return send_email(args["to"], args["subject"], args["body"])
         else:
-            return f"[אירועים קרובים ביומן:]\n{list_upcoming_events(10)}"
+            return f"פונקציה לא מוכרת: {name}"
     except Exception as e:
-        return f"[שגיאה בגישה ליומן: {e}]"
+        logger.error(f"Function {name} error: {e}")
+        return f"שגיאה בביצוע {name}: {e}"
 
 
 def get_response(phone: str, message: str, sender_name: str = "") -> str:
     """Process a message and return an AI response."""
 
-    # Load conversation history
     history = get_history(phone, limit=settings.MAX_HISTORY)
 
-    # Build system prompt with calendar data if needed
-    system_prompt = settings.SYSTEM_PROMPT
-
-    if _is_calendar_query(message):
-        calendar_context = _get_calendar_context(message)
-        system_prompt += f"""
-
-יש לך גישה ליומן Google Calendar של דויד. הנה המידע העדכני:
-
-{calendar_context}
-
-השתמש במידע זה כדי לענות על שאלות דויד לגבי היומן שלו. אם דויד מבקש לקבוע פגישה, ציין את הפרטים בצורה ברורה.
-"""
-
-    # Build contents list
     contents = []
     for msg in history:
         role = "user" if msg["role"] == "user" else "model"
         contents.append(types.Content(role=role, parts=[types.Part(text=msg["content"])]))
     contents.append(types.Content(role="user", parts=[types.Part(text=message)]))
 
-    # Call Gemini
-    response = client.models.generate_content(
-        model=settings.LLM_MODEL,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
-        )
+    config = types.GenerateContentConfig(
+        system_instruction=settings.SYSTEM_PROMPT,
+        tools=TOOLS,
     )
-    reply = response.text
 
-    # Save conversation
+    # Agentic loop - handle function calls
+    max_iterations = 5
+    for _ in range(max_iterations):
+        response = client.models.generate_content(
+            model=settings.LLM_MODEL,
+            contents=contents,
+            config=config,
+        )
+
+        # Check for function calls
+        has_function_call = False
+        function_results = []
+
+        for part in response.candidates[0].content.parts:
+            if hasattr(part, "function_call") and part.function_call:
+                has_function_call = True
+                fc = part.function_call
+                result = _execute_function(fc.name, dict(fc.args))
+                logger.info(f"Function call: {fc.name} -> {result[:80]}")
+                function_results.append(
+                    types.Part(function_response=types.FunctionResponse(
+                        name=fc.name,
+                        response={"result": result}
+                    ))
+                )
+
+        if has_function_call:
+            # Add model response and function results to conversation
+            contents.append(response.candidates[0].content)
+            contents.append(types.Content(role="user", parts=function_results))
+        else:
+            # Final text response
+            reply = response.text
+            save_message(phone, "user", message)
+            save_message(phone, "assistant", reply)
+            return reply
+
+    # Fallback
+    reply = response.text
     save_message(phone, "user", message)
     save_message(phone, "assistant", reply)
-
     return reply
