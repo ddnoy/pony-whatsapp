@@ -132,8 +132,12 @@ def get_response(phone: str, message: str, sender_name: str = "") -> str:
         contents.append(types.Content(role=role, parts=[types.Part(text=msg["content"])]))
     contents.append(types.Content(role="user", parts=[types.Part(text=message)]))
 
+    from datetime import datetime
+    today = datetime.now().strftime("%A, %d/%m/%Y")
+    system_prompt = settings.SYSTEM_PROMPT + f"\n\nהתאריך והיום הנוכחי: {today}. השתמש תמיד בתאריך הזה כשאתה מחשב 'מחר', 'השבוע' וכו'."
+
     config = types.GenerateContentConfig(
-        system_instruction=settings.SYSTEM_PROMPT,
+        system_instruction=system_prompt,
         tools=TOOLS,
     )
 
